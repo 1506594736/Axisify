@@ -108,6 +108,11 @@ def build_group(rebuild=False):
                             socket_type='NodeSocketVector')
     s_axis.default_value = (0.0, 0.0, 0.0)
 
+    s_clamp = itf.new_socket("厚度钳制", in_out='INPUT', socket_type='NodeSocketFloat')
+    s_clamp.default_value = 0.9
+    s_clamp.min_value = 0.0
+    s_clamp.max_value = 1.0
+
     itf.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
 
     # ---------- 节点 ----------
@@ -175,9 +180,63 @@ def build_group(rebuild=False):
     dif2s = B.v('SCALE', a=dif2, scale=g)
     A = B.v('ADD', a=a1, b=dif2s)
 
-    # D = A * (-厚度 * |n·A|)
+    # ---------- 厚度钳制：按局部曲率半径限制位移 ----------
+    # 厚度一旦超过局部曲率半径 R，等距偏移就会穿过圆心翻转（自交）。
+    # 每条边算一个等效半径 Re = L / |A2 - A1|（直线边分母→0，Re→∞）。
+    # 0 = 关闭钳制
+    ev = _new(ng, 'GeometryNodeInputMeshEdgeVertices', location=(-2200, -700))
+    fa1 = _new(ng, 'GeometryNodeFieldAtIndex', data_type='FLOAT_VECTOR',
+               domain='EDGE', location=(-1900, -700))
+    _link(ng, A, fa1.inputs['Value'])
+    _link(ng, ev.outputs['Vertex Index 1'], fa1.inputs['Index'])
+    fa2 = _new(ng, 'GeometryNodeFieldAtIndex', data_type='FLOAT_VECTOR',
+               domain='EDGE', location=(-1900, -950))
+    _link(ng, A, fa2.inputs['Value'])
+    _link(ng, ev.outputs['Vertex Index 2'], fa2.inputs['Index'])
+
+    dpos = B.v('SUBTRACT', a=ev.outputs['Position 2'], b=ev.outputs['Position 1'])
+    elen = B.vs('LENGTH', dpos, None)
+    dA = B.v('SUBTRACT', a=fa2.outputs['Value'], b=fa1.outputs['Value'])
+    dAl = B.vs('LENGTH', dA, None)
+    den = B.m('MAXIMUM', a=dAl, bv=1e-4)
+    Re = B.m('DIVIDE', a=elen, b=den)
+
+    # 把边上的 Re 存成属性 → 转成点云 → 每个顶点取最近边的 Re
+    st2 = _new(ng, 'GeometryNodeStoreNamedAttribute', data_type='FLOAT',
+               domain='EDGE', location=(-1000, -700))
+    st2.inputs['Name'].default_value = "axisify_R"
+    _link(ng, gi.outputs['Geometry'], st2.inputs['Geometry'])
+    _link(ng, Re, st2.inputs['Value'])
+
+    m2p = _new(ng, 'GeometryNodeMeshToPoints', mode='EDGES', location=(-700, -700))
+    _link(ng, st2.outputs['Geometry'], m2p.inputs['Mesh'])
+
+    ppos = _new(ng, 'GeometryNodeInputPosition', location=(-1000, -1100))
+    snn = _new(ng, 'GeometryNodeSampleNearest', location=(-400, -700))
+    _link(ng, m2p.outputs['Points'], snn.inputs['Geometry'])
+    _link(ng, ppos.outputs['Position'], snn.inputs['Sample Position'])
+
+    naR = _new(ng, 'GeometryNodeInputNamedAttribute', data_type='FLOAT',
+               location=(-700, -1000))
+    naR.inputs['Name'].default_value = "axisify_R"
+    sidx = _new(ng, 'GeometryNodeSampleIndex', data_type='FLOAT',
+                domain='POINT', location=(-150, -700))
+    _link(ng, m2p.outputs['Points'], sidx.inputs['Geometry'])
+    _link(ng, naR.outputs['Attribute'], sidx.inputs['Value'])
+    _link(ng, snn.outputs['Index'], sidx.inputs['Index'])
+
+    # 有效厚度 = 关闭钳制时=厚度；开启时 = min(厚度, 钳制强度 × R)
+    cOn = B.m('GREATER_THAN', a=gi.outputs["厚度钳制"], bv=1e-4)
+    cMax = B.m('MULTIPLY', a=gi.outputs["厚度钳制"], b=sidx.outputs['Value'])
+    cLim = B.m('MINIMUM', a=gi.outputs["厚度"], b=cMax)
+    cOff = B.m('SUBTRACT', b=cOn, av=1.0)
+    hA = B.m('MULTIPLY', a=gi.outputs["厚度"], b=cOff)
+    hB = B.m('MULTIPLY', a=cLim, b=cOn)
+    hE = B.m('ADD', a=hA, b=hB)
+
+    # D = A * (-有效厚度 * |n·A|)
     t2 = B.vs('DOT_PRODUCT', nrm.outputs['Normal'], A)
-    k = B.m('MULTIPLY', a=gi.outputs["厚度"], b=t2)
+    k = B.m('MULTIPLY', a=hE, b=t2)
     kneg = B.m('MULTIPLY', a=k, bv=-1.0)
     D = B.v('SCALE', a=A, scale=kneg)
 

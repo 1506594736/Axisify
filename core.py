@@ -43,7 +43,10 @@ AXNAME = {(1, 0, 0): "+X", (-1, 0, 0): "-X", (0, 1, 0): "+Y",
 
 
 def build_bmesh(obj):
-    if any(m.type == 'SOLIDIFY' for m in obj.modifiers):
+    # 修复：原来只判断 SOLIDIFY，导致挂 Geometry Nodes 修改器时读的是未求值的原始面片。
+    # 凡是会改变几何的修改器（Solidify / Geometry Nodes）都应走求值后的网格。
+    # 算法本身没有任何改动。
+    if any(m.type in ('SOLIDIFY', 'NODES') for m in obj.modifiers):
         dg = bpy.context.evaluated_depsgraph_get()
         ev = obj.evaluated_get(dg)
         me = ev.to_mesh()

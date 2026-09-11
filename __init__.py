@@ -7,10 +7,10 @@
 bl_info = {
     "name": "Axisify",
     "author": "HULIMIAO",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
-    "description": "实体化并让侧壁精确对齐到 X/Y/Z 轴，可作为可调修改器",
+    "description": "实体化并让侧壁精确对齐到 X/Y/Z 轴，可作为可调修改器（带厚度钳制）",
     "doc_url": "https://github.com/1506594736/Axisify",
     "tracker_url": "https://github.com/1506594736/Axisify/issues",
     "category": "Mesh",
@@ -77,6 +77,13 @@ def ensure_solidify(context, obj, st):
     mod.use_even_offset = bool(st.even_thickness)
     mod.use_rim = True
     mod.use_rim_only = False
+    # 不用 Blender 自带的 thickness_clamp：它按「网格边长」钳制，
+    # 对细网格会过度压制（实测 0.9 × 边长 0.079 → 厚度被压到 0.071）。
+    # 钳制改由 GN 修改器按真实曲率半径做。
+    try:
+        mod.thickness_clamp = 0.0
+    except Exception:
+        pass
 
     if made:
         # 新建的放到栈顶，保证在其它修改器之前生效
@@ -112,6 +119,7 @@ def set_group_defaults(ng, st):
     """把面板参数写成节点组的接口默认值（新加的修改器会继承它们）"""
     vals = {
         "厚度": float(st.thickness),
+        "厚度钳制": float(st.thickness_clamp),
         "对齐到轴": True,
         "吸轴角度": float(st.snap_tol),
         "固定轴 (0=自动)": (AXIS_VEC[st.fixed_axis] if st.axis_mode == 'fixed'
@@ -159,6 +167,13 @@ class AXISIFY_PG_settings(PropertyGroup):
         name="厚度",
         description="实体化厚度（对应 Solidify 的 Thickness）；侧壁对齐后墙长就等于它",
         default=0.1, min=0.0, soft_max=10.0,
+    )
+    thickness_clamp: FloatProperty(
+        name="厚度钳制",
+        description=("防止厚度超过局部曲率半径时内层翻转自交。\n"
+                     "实际厚度会被限制在 局部曲率半径 × 该值 以内。\n"
+                     "0 = 关闭钳制（厚度大时会翻转）"),
+        default=0.9, min=0.0, max=1.0, subtype='FACTOR',
     )
     solidify_offset: EnumProperty(
         name="方向",
@@ -282,10 +297,31 @@ class AXISIFY_OT_align(Operator):
                 return {'CANCELLED'}
 
         smod = ""
+        pre_mods = {m.name for m in src.modifiers}
+        tmp_gn_names = set()
         has_gn = any(m.type == 'NODES'
                      and getattr(m.node_group, "name", "") == gn.GROUP_NAME
                      for m in src.modifiers)
-        if has_gn:
+        if st.auto_solidify and st.thickness_clamp > 1e-4:
+            # 开启钳制 -> 走 GN 修改器（它按真实曲率半径钳制，
+            # 比 Blender 自带按网格尺度的准得多）
+            if st.replace_solidify:
+                for m in [m for m in src.modifiers if m.type == 'SOLIDIFY']:
+                    src.modifiers.remove(m)
+            ngx = gn.build_group()
+            for m in [m for m in src.modifiers
+                      if m.type == 'NODES' and m.node_group is ngx]:
+                src.modifiers.remove(m)
+            set_group_defaults(ngx, st)
+            gn.ensure_modifier(src)
+            gnmod = [m for m in src.modifiers
+                     if m.type == 'NODES' and m.node_group is ngx][-1]
+            move_modifier_to_top(context, src, gnmod)
+            context.view_layer.update()
+            tmp_gn_names = {m.name for m in src.modifiers} - pre_mods
+            smod = "Axisify修改器(钳制%.2f) %.4g" % (st.thickness_clamp,
+                                                   st.thickness)
+        elif has_gn:
             smod = "已有 Axisify 修改器（不再叠加 Solidify）"
         elif st.auto_solidify:
             _m, made = ensure_solidify(context, src, st)
@@ -303,15 +339,31 @@ class AXISIFY_OT_align(Operator):
         core.SAVE_BLEND = ""
 
         before = set(bpy.data.objects)
-        buf = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buf):
-                core.run()
-        except Exception as ex:
-            self.report({'ERROR'}, "失败：%s" % ex)
-            return {'CANCELLED'}
-
-        log = buf.getvalue()
+        log = ""
+        if tmp_gn_names:
+            # GN 修改器已经完成「实体化 + 贴轴」，直接烘焙它的求值结果，
+            # 不再跑一遍 core（那会把已经对齐好的几何再动一次）
+            try:
+                bmx = core.build_bmesh(src)
+                nme = bpy.data.meshes.new(src.name + "_axis")
+                bmx.to_mesh(nme)
+                bmx.free()
+                nobj = bpy.data.objects.new(src.name + "_对齐", nme)
+                nobj.matrix_world = src.matrix_world
+                context.scene.collection.objects.link(nobj)
+                log = "[烘焙] 直接采用 Axisify 修改器的求值结果（已含钳制）\n"
+            except Exception as ex:
+                self.report({'ERROR'}, "失败：%s" % ex)
+                return {'CANCELLED'}
+        else:
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    core.run()
+            except Exception as ex:
+                self.report({'ERROR'}, "失败：%s" % ex)
+                return {'CANCELLED'}
+            log = buf.getvalue()
         for line in log.splitlines():
             print(line)
 
@@ -322,6 +374,10 @@ class AXISIFY_OT_align(Operator):
             return {'CANCELLED'}
 
         out = new[-1]
+        if tmp_gn_names:
+            for m in [m for m in src.modifiers if m.name in tmp_gn_names]:
+                src.modifiers.remove(m)
+            context.view_layer.update()
         if st.auto_solidify and st.bake_clean_solidify:
             for m in [m for m in src.modifiers if m.type == 'SOLIDIFY']:
                 src.modifiers.remove(m)
@@ -378,6 +434,7 @@ class AXISIFY_PT_main(Panel):
         sub = box.column(align=True)
         sub.enabled = st.auto_solidify
         sub.prop(st, "thickness")
+        sub.prop(st, "thickness_clamp")
         sub.prop(st, "solidify_offset")
         sub.prop(st, "even_thickness")
         row = box.row()
