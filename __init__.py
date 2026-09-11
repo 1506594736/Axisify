@@ -7,10 +7,10 @@
 bl_info = {
     "name": "Axisify",
     "author": "HULIMIAO",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
-    "description": "实体化后把侧壁精确对齐到 X/Y/Z 轴",
+    "description": "实体化后把侧壁精确对齐到 X/Y/Z 轴（可设厚度与方向）",
     "doc_url": "https://github.com/1506594736/axisify",
     "tracker_url": "https://github.com/1506594736/axisify/issues",
     "category": "Mesh",
@@ -38,6 +38,44 @@ AXIS_VEC = {
     '+Y': (0.0, 1.0, 0.0), '-Y': (0.0, -1.0, 0.0),
     '+Z': (0.0, 0.0, 1.0), '-Z': (0.0, 0.0, -1.0),
 }
+
+# Solidify 的 offset 符号约定（已用立方体实测确认）：
+#   -1 -> 向内（原始面成为外表面）   0 -> 居中   +1 -> 向外（原始面成为内表面）
+SOLIDIFY_OFFSET = {'IN': -1.0, 'CENTER': 0.0, 'OUT': 1.0}
+OFFSET_CN = {'IN': "向内", 'CENTER': "居中", 'OUT': "向外"}
+
+
+def ensure_solidify(context, obj, st):
+    """按面板参数添加 / 更新 Solidify 修改器。返回 (修改器, 是否新建)。"""
+    mod = None
+    for m in obj.modifiers:
+        if m.type == 'SOLIDIFY':
+            mod = m
+            break
+    made = False
+    if mod is None:
+        mod = obj.modifiers.new(name="Solidify", type='SOLIDIFY')
+        made = True
+    mod.thickness = float(st.thickness)
+    mod.offset = SOLIDIFY_OFFSET[st.solidify_offset]
+    mod.use_even_offset = bool(st.even_thickness)
+    mod.use_rim = True
+    mod.use_rim_only = False
+
+    if made:
+        # 新建的放到栈顶，保证在其它修改器之前生效
+        try:
+            if hasattr(context, "temp_override"):
+                with context.temp_override(object=obj, active_object=obj,
+                                           selected_objects=[obj],
+                                           selected_editable_objects=[obj]):
+                    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+            else:
+                bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+        except Exception:
+            pass
+    context.view_layer.update()
+    return mod, made
 
 
 class AXISIFY_PG_settings(PropertyGroup):
@@ -67,6 +105,32 @@ class AXISIFY_PG_settings(PropertyGroup):
         description="二面角小于该值的相邻面视为同一片；用来把盖面和侧壁分开",
         default=45.0, min=1.0, max=89.0,
     )
+
+    auto_solidify: BoolProperty(
+        name="自动设置实体化",
+        description="点按钮时自动给物体添加 / 更新 Solidify 修改器，用下面的厚度和方向。取消勾选则沿用物体自己的修改器",
+        default=True,
+    )
+    thickness: FloatProperty(
+        name="厚度",
+        description="实体化厚度（对应 Solidify 的 Thickness）；侧壁对齐后墙长就等于它",
+        default=0.1, min=0.0, soft_max=10.0,
+    )
+    solidify_offset: EnumProperty(
+        name="方向",
+        description="实体化往哪一侧长（对应 Solidify 的 Offset）",
+        items=[
+            ('IN', "向内（原件在外）", "Offset = -1：原始面成为外表面，新几何向内长"),
+            ('CENTER', "居中", "Offset = 0：两侧各长一半"),
+            ('OUT', "向外（原件在内）", "Offset = +1：原始面成为内表面，新几何向外长"),
+        ],
+        default='IN',
+    )
+    even_thickness: BoolProperty(
+        name="均匀厚度",
+        description="对应 Solidify 的 Even Thickness；让垂直厚度处处相等，但会改变转角处的布线",
+        default=False,
+    )
     skip_buried: BoolProperty(
         name="自交保护",
         description="跳过自交/重叠区域内的侧壁。实测开启后残留偏差反而更大，默认关闭",
@@ -78,6 +142,29 @@ class AXISIFY_PG_settings(PropertyGroup):
         default=True,
     )
     last_info: StringProperty(default="")
+
+
+class AXISIFY_OT_read_solidify(Operator):
+    bl_idname = "object.axisify_read_solidify"
+    bl_label = "从修改器读取"
+    bl_description = "把物体上 Solidify 修改器的厚度 / 方向 / 均匀厚度读进面板"
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return (ob is not None and ob.type == 'MESH'
+                and any(m.type == 'SOLIDIFY' for m in ob.modifiers))
+
+    def execute(self, context):
+        ob = context.active_object
+        st = context.scene.axisify
+        mod = next(m for m in ob.modifiers if m.type == 'SOLIDIFY')
+        st.thickness = float(mod.thickness)
+        st.even_thickness = bool(mod.use_even_offset)
+        st.solidify_offset = ('IN' if mod.offset < -0.33
+                              else ('OUT' if mod.offset > 0.33 else 'CENTER'))
+        self.report({'INFO'}, "已读取 %s 的实体化参数" % ob.name)
+        return {'FINISHED'}
 
 
 class AXISIFY_OT_align(Operator):
@@ -93,6 +180,20 @@ class AXISIFY_OT_align(Operator):
 
     def execute(self, context):
         st = context.scene.axisify
+        src = context.active_object
+        if src.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception as ex:
+                self.report({'ERROR'}, "请先切回物体模式（自动切换失败：%s）" % ex)
+                return {'CANCELLED'}
+
+        smod = ""
+        if st.auto_solidify:
+            _m, made = ensure_solidify(context, src, st)
+            smod = "%sSolidify %.4g %s" % ("新建" if made else "更新",
+                                         st.thickness,
+                                         OFFSET_CN[st.solidify_offset])
 
         # 把面板参数写进算法模块的同名全局变量（算法本身一行未改）
         core.AXIS_MODE = st.axis_mode
@@ -139,7 +240,7 @@ class AXISIFY_OT_align(Operator):
                          .replace("vs 各自所取轴", "对轴偏差")
                          .strip())
 
-        parts = [p for p in (nwall, align) if p]
+        parts = [p for p in (smod, nwall, align) if p]
         st.last_info = " | ".join(parts) if parts else "完成"
         self.report({'INFO'}, "已生成 %s" % out.name)
         return {'FINISHED'}
@@ -170,6 +271,19 @@ class AXISIFY_PT_main(Panel):
         if st.axis_mode == 'fixed':
             col.prop(st, "fixed_axis")
 
+        box = layout.box()
+        box.label(text="实体化", icon='MOD_SOLIDIFY')
+        box.prop(st, "auto_solidify")
+        sub = box.column(align=True)
+        sub.enabled = st.auto_solidify
+        sub.prop(st, "thickness")
+        sub.prop(st, "solidify_offset")
+        sub.prop(st, "even_thickness")
+        row = box.row()
+        row.enabled = AXISIFY_OT_read_solidify.poll(context)
+        row.operator(AXISIFY_OT_read_solidify.bl_idname, icon='IMPORT')
+
+        layout.label(text="侧壁贴轴")
         col = layout.column(align=True)
         col.prop(st, "snap_tol")
         col.prop(st, "min_axial")
@@ -205,9 +319,10 @@ class AXISIFY_PT_help(Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text="1. 给物体加 Solidify，厚度调好")
-        col.label(text="2. 应用或保留都行")
-        col.label(text="3. 选中物体，点上面的按钮")
+        col.label(text="1. 选中物体（可勾选自动设置实体化）")
+        col.label(text="2. 设好厚度和方向")
+        col.label(text="3. 点“对齐侧壁到轴”")
+        col.label(text="4. 结果生成新物体（原名_对齐）")
         layout.separator()
         col = layout.column(align=True)
         col.label(text="结果会生成一个新物体（原名_对齐）")
@@ -224,6 +339,7 @@ class AXISIFY_PT_help(Panel):
 
 CLASSES = (
     AXISIFY_PG_settings,
+    AXISIFY_OT_read_solidify,
     AXISIFY_OT_align,
     AXISIFY_PT_main,
     AXISIFY_PT_help,
