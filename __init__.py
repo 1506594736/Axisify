@@ -11,8 +11,8 @@ bl_info = {
     "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
     "description": "实体化后把侧壁精确对齐到 X/Y/Z 轴（可设厚度与方向）",
-    "doc_url": "https://github.com/1506594736/axisify",
-    "tracker_url": "https://github.com/1506594736/axisify/issues",
+    "doc_url": "https://github.com/1506594736/Axisify",
+    "tracker_url": "https://github.com/1506594736/Axisify/issues",
     "category": "Mesh",
 }
 

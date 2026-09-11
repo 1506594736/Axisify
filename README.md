@@ -14,26 +14,36 @@
    方向 ≈ 8.2°（斜）              方向 = 0.00°（平行）
 ```
 
+## 下载
+
+**直接下载插件压缩包**（该链接始终打包 `main` 分支的最新提交）：
+
+https://github.com/1506594736/Axisify/archive/main.zip
+
 ## 安装
 
-**方式一：从 GitHub 装**
+1. 下载上面的插件压缩包
+2. 打开 Blender
+3. 编辑 → 偏好设置 → 插件
+4. 右上角下拉菜单选择「从磁盘安装」
+5. 选中刚下载的 zip 文件
+6. 勾选列表中的「**Axisify**」启用插件
 
-1. 下载本仓库的 ZIP（Code → Download ZIP）
-2. Blender → 编辑 → 偏好设置 → 插件 → 从磁盘安装（Install from Disk）
-3. 选择那个 ZIP，勾选启用 **Axisify**
+> 安装后的插件目录名为 `Axisify-main`（压缩包的顶层目录名），属正常现象。
 
-**方式二：手动**
+### 从旧版升级
 
-把整个 `axisify` 文件夹丢进：
+1. 重新下载上面的 zip
+2. 再次用「从磁盘安装」覆盖安装
+3. **重启 Blender**（或在偏好设置里取消勾选再重新勾选插件）
 
-```
-%APPDATA%\Blender Foundation\Blender\<版本>\scripts\addons\
-```
+> Blender 不会重新注册已注册的 Panel / Operator。覆盖文件后不重启，侧边栏还是旧界面，
+> 但用户偏好设置里的版本号已经更新了 —— 这是最容易误判的坑。
 
-然后重启 Blender，在偏好设置里勾选启用。
+### 手动安装（备选）
 
-> 更新插件后如果侧边栏还是旧的，是 Blender 不重新注册已注册的 Panel/Operator。
-> 重启 Blender，或在偏好设置里把插件取消勾选再勾选。
+把整个文件夹丢进 `%APPDATA%\Blender Foundation\Blender\<版本>\scripts\addons\`，
+重启 Blender 后在偏好设置里勾选启用。
 
 ## 使用
 
