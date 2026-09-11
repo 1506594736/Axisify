@@ -7,7 +7,7 @@
 bl_info = {
     "name": "Axisify",
     "author": "HULIMIAO",
-    "version": (1, 3, 0),
+    "version": (1, 4, 0),
     "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
     "description": "实体化并让侧壁精确对齐到 X/Y/Z 轴，可作为可调修改器（带厚度钳制）",
@@ -120,6 +120,7 @@ def set_group_defaults(ng, st):
     vals = {
         "厚度": float(st.thickness),
         "厚度钳制": float(st.thickness_clamp),
+        "合并顶点": float(st.merge_verts),
         "对齐到轴": True,
         "吸轴角度": float(st.snap_tol),
         "固定轴 (0=自动)": (AXIS_VEC[st.fixed_axis] if st.axis_mode == 'fixed'
@@ -174,6 +175,14 @@ class AXISIFY_PG_settings(PropertyGroup):
                      "实际厚度会被限制在 局部曲率半径 × 该值 以内。\n"
                      "0 = 关闭钳制（厚度大时会翻转）"),
         default=0.9, min=0.0, max=1.0, subtype='FACTOR',
+    )
+    merge_verts: FloatProperty(
+        name="合并顶点",
+        description=("把塌缩到一起的顶点焊成一个点。焊接距离 = 厚度 × 该值。\n"
+                     "厚度钳制 = 1.0 时内层刚好塌到圆心，开启本项就得到\n"
+                     "干净的「实体化成半径」收口（关闭则会翻折自交）。\n"
+                     "0 = 关闭"),
+        default=0.0, min=0.0, max=0.5, subtype='FACTOR',
     )
     solidify_offset: EnumProperty(
         name="方向",
@@ -302,7 +311,8 @@ class AXISIFY_OT_align(Operator):
         has_gn = any(m.type == 'NODES'
                      and getattr(m.node_group, "name", "") == gn.GROUP_NAME
                      for m in src.modifiers)
-        if st.auto_solidify and st.thickness_clamp > 1e-4:
+        if st.auto_solidify and (st.thickness_clamp > 1e-4
+                                 or st.merge_verts > 1e-4):
             # 开启钳制 -> 走 GN 修改器（它按真实曲率半径钳制，
             # 比 Blender 自带按网格尺度的准得多）
             if st.replace_solidify:
@@ -435,6 +445,7 @@ class AXISIFY_PT_main(Panel):
         sub.enabled = st.auto_solidify
         sub.prop(st, "thickness")
         sub.prop(st, "thickness_clamp")
+        sub.prop(st, "merge_verts")
         sub.prop(st, "solidify_offset")
         sub.prop(st, "even_thickness")
         row = box.row()

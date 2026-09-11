@@ -11,6 +11,7 @@
   4. 把 D 存成点属性，挤出边界得到侧壁，新顶点按 D 平移
   5. 复制一份曲面按 D 平移并翻转法线 = 内层
   6. 合并 + 按距离焊接
+  7. 可选：把塌缩到一起的顶点焊成一个点（实体化成半径时用）
 """
 
 import math
@@ -112,6 +113,11 @@ def build_group(rebuild=False):
     s_clamp.default_value = 0.9
     s_clamp.min_value = 0.0
     s_clamp.max_value = 1.0
+
+    s_merge = itf.new_socket("合并顶点", in_out='INPUT', socket_type='NodeSocketFloat')
+    s_merge.default_value = 0.0
+    s_merge.min_value = 0.0
+    s_merge.max_value = 0.5
 
     itf.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
 
@@ -225,9 +231,16 @@ def build_group(rebuild=False):
     _link(ng, naR.outputs['Attribute'], sidx.inputs['Value'])
     _link(ng, snn.outputs['Index'], sidx.inputs['Index'])
 
+    # 平滑 R：逐顶点的曲率估计噪声很大（实测极差 150%），
+    # 不平滑的话每个顶点会落在它「自己」的曲率中心，塌缩不成一个点。
+    blr = _new(ng, 'GeometryNodeBlurAttribute', data_type='FLOAT',
+               location=(150, -700))
+    blr.inputs['Iterations'].default_value = 3
+    _link(ng, sidx.outputs['Value'], blr.inputs['Value'])
+
     # 有效厚度 = 关闭钳制时=厚度；开启时 = min(厚度, 钳制强度 × R)
     cOn = B.m('GREATER_THAN', a=gi.outputs["厚度钳制"], bv=1e-4)
-    cMax = B.m('MULTIPLY', a=gi.outputs["厚度钳制"], b=sidx.outputs['Value'])
+    cMax = B.m('MULTIPLY', a=gi.outputs["厚度钳制"], b=blr.outputs['Value'])
     cLim = B.m('MINIMUM', a=gi.outputs["厚度"], b=cMax)
     cOff = B.m('SUBTRACT', b=cOn, av=1.0)
     hA = B.m('MULTIPLY', a=gi.outputs["厚度"], b=cOff)
@@ -290,7 +303,16 @@ def build_group(rebuild=False):
     mg = _new(ng, 'GeometryNodeMergeByDistance', location=(900, 700))
     mg.inputs['Distance'].default_value = 1e-5
     _link(ng, jn.outputs['Geometry'], mg.inputs['Geometry'])
-    _link(ng, mg.outputs['Geometry'], go.inputs['Geometry'])
+
+    # 第二次焊接：距离 = max(合并顶点 × 厚度, 1e-5)。
+    # 厚度钳制到 1.0 时内层会塌到圆心，这里把它们焊成一个点，
+    # 得到干净的「实体化成半径」收口（而不是翻折自交）。
+    mg2 = _new(ng, 'GeometryNodeMergeByDistance', location=(1100, 700))
+    _link(ng, mg.outputs['Geometry'], mg2.inputs['Geometry'])
+    mdst = B.m('MULTIPLY', a=gi.outputs["合并顶点"], b=gi.outputs["厚度"])
+    mdst2 = B.m('MAXIMUM', a=mdst, bv=1e-5)
+    _link(ng, mdst2, mg2.inputs['Distance'])
+    _link(ng, mg2.outputs['Geometry'], go.inputs['Geometry'])
 
     ng.nodes.remove  # noop, 保持可读
     return ng
