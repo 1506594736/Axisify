@@ -20,6 +20,8 @@ import bpy
 
 GROUP_NAME = "Axisify Solidify Align"
 ATTR = "axisify_D"
+BLUR_ITER = 0      # R 估计的平滑次数（测下来 >0 会把直边的 R=∞ 混进来，反而让钳制失效）
+DEBUG_STORE_R = False   # True 时把算出的 R 存成顶点属性 "axisify_Rout"，便于测出来
 
 
 def _new(ng, idname, **kw):
@@ -119,6 +121,11 @@ def build_group(rebuild=False):
     s_merge.min_value = 0.0
     s_merge.max_value = 0.5
 
+    s_hmax = itf.new_socket("最大厚度 (0=不限)", in_out='INPUT',
+                            socket_type='NodeSocketFloat')
+    s_hmax.default_value = 0.0
+    s_hmax.min_value = 0.0
+
     itf.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
 
     # ---------- 节点 ----------
@@ -190,14 +197,15 @@ def build_group(rebuild=False):
     # 厚度一旦超过局部曲率半径 R，等距偏移就会穿过圆心翻转（自交）。
     # 每条边算一个等效半径 Re = L / |A2 - A1|（直线边分母→0，Re→∞）。
     # 0 = 关闭钳制
+    # 注意：必须用【原始法线 n】算曲率，不能用吸附后的 A —— A 会被 SNAP_TOL 打断。
     ev = _new(ng, 'GeometryNodeInputMeshEdgeVertices', location=(-2200, -700))
     fa1 = _new(ng, 'GeometryNodeFieldAtIndex', data_type='FLOAT_VECTOR',
                domain='EDGE', location=(-1900, -700))
-    _link(ng, A, fa1.inputs['Value'])
+    _link(ng, nrm.outputs['Normal'], fa1.inputs['Value'])
     _link(ng, ev.outputs['Vertex Index 1'], fa1.inputs['Index'])
     fa2 = _new(ng, 'GeometryNodeFieldAtIndex', data_type='FLOAT_VECTOR',
                domain='EDGE', location=(-1900, -950))
-    _link(ng, A, fa2.inputs['Value'])
+    _link(ng, nrm.outputs['Normal'], fa2.inputs['Value'])
     _link(ng, ev.outputs['Vertex Index 2'], fa2.inputs['Index'])
 
     dpos = B.v('SUBTRACT', a=ev.outputs['Position 2'], b=ev.outputs['Position 1'])
@@ -207,7 +215,7 @@ def build_group(rebuild=False):
     den = B.m('MAXIMUM', a=dAl, bv=1e-4)
     Re = B.m('DIVIDE', a=elen, b=den)
 
-    # 把边上的 Re 存成属性 → 转成点云 → 每个顶点取最近边的 Re
+    # 存成 EDGE 属性 → 转点云 → 顶点取最近边的 R
     st2 = _new(ng, 'GeometryNodeStoreNamedAttribute', data_type='FLOAT',
                domain='EDGE', location=(-1000, -700))
     st2.inputs['Name'].default_value = "axisify_R"
@@ -231,11 +239,34 @@ def build_group(rebuild=False):
     _link(ng, naR.outputs['Attribute'], sidx.inputs['Value'])
     _link(ng, snn.outputs['Index'], sidx.inputs['Index'])
 
+    # 存成 CORNER 属性 → 转成「落在顶点上」的点云 → 顶点采样（距离 0，不会选错）
+    st2 = _new(ng, 'GeometryNodeStoreNamedAttribute', data_type='FLOAT',
+               domain='CORNER', location=(-1000, -700))
+    st2.inputs['Name'].default_value = "axisify_R"
+    _link(ng, gi.outputs['Geometry'], st2.inputs['Geometry'])
+    _link(ng, Re, st2.inputs['Value'])
+
+    m2p = _new(ng, 'GeometryNodeMeshToPoints', mode='CORNERS', location=(-700, -700))
+    _link(ng, st2.outputs['Geometry'], m2p.inputs['Mesh'])
+
+    snn = _new(ng, 'GeometryNodeSampleNearest', location=(-400, -700))
+    _link(ng, m2p.outputs['Points'], snn.inputs['Geometry'])
+    _link(ng, ppos.outputs['Position'], snn.inputs['Sample Position'])
+
+    naR = _new(ng, 'GeometryNodeInputNamedAttribute', data_type='FLOAT',
+               location=(-700, -1000))
+    naR.inputs['Name'].default_value = "axisify_R"
+    sidx = _new(ng, 'GeometryNodeSampleIndex', data_type='FLOAT',
+                domain='POINT', location=(-150, -700))
+    _link(ng, m2p.outputs['Points'], sidx.inputs['Geometry'])
+    _link(ng, naR.outputs['Attribute'], sidx.inputs['Value'])
+    _link(ng, snn.outputs['Index'], sidx.inputs['Index'])
+
     # 平滑 R：逐顶点的曲率估计噪声很大（实测极差 150%），
     # 不平滑的话每个顶点会落在它「自己」的曲率中心，塌缩不成一个点。
     blr = _new(ng, 'GeometryNodeBlurAttribute', data_type='FLOAT',
                location=(150, -700))
-    blr.inputs['Iterations'].default_value = 3
+    blr.inputs['Iterations'].default_value = BLUR_ITER
     _link(ng, sidx.outputs['Value'], blr.inputs['Value'])
 
     # 有效厚度 = 关闭钳制时=厚度；开启时 = min(厚度, 钳制强度 × R)
@@ -247,9 +278,16 @@ def build_group(rebuild=False):
     hB = B.m('MULTIPLY', a=cLim, b=cOn)
     hE = B.m('ADD', a=hA, b=hB)
 
+    # 手动上限（完全可预测的兜底）：0 = 不限
+    mxOn = B.m('GREATER_THAN', a=gi.outputs["最大厚度 (0=不限)"], bv=1e-6)
+    mxA = B.m('MULTIPLY', a=hE, b=B.m('SUBTRACT', b=mxOn, av=1.0))
+    mxB = B.m('MULTIPLY', a=B.m('MINIMUM', a=hE,
+                                b=gi.outputs["最大厚度 (0=不限)"]), b=mxOn)
+    hF = B.m('ADD', a=mxA, b=mxB)
+
     # D = A * (-有效厚度 * |n·A|)
     t2 = B.vs('DOT_PRODUCT', nrm.outputs['Normal'], A)
-    k = B.m('MULTIPLY', a=hE, b=t2)
+    k = B.m('MULTIPLY', a=hF, b=t2)
     kneg = B.m('MULTIPLY', a=k, bv=-1.0)
     D = B.v('SCALE', a=A, scale=kneg)
 
@@ -259,6 +297,22 @@ def build_group(rebuild=False):
     st.inputs['Name'].default_value = ATTR
     _link(ng, gi.outputs['Geometry'], st.inputs['Geometry'])
     _link(ng, D, st.inputs['Value'])
+    src_geo = st.outputs['Geometry']
+
+    if DEBUG_STORE_R:
+        dbg = _new(ng, 'GeometryNodeStoreNamedAttribute', data_type='FLOAT',
+                   domain='POINT', location=(-200, 1100))
+        dbg.inputs['Name'].default_value = "axisify_Rout"
+        _link(ng, src_geo, dbg.inputs['Geometry'])
+        _link(ng, blr.outputs['Value'], dbg.inputs['Value'])
+        src_geo = dbg.outputs['Geometry']
+
+        dbg2 = _new(ng, 'GeometryNodeStoreNamedAttribute', data_type='FLOAT',
+                    domain='POINT', location=(-200, 1250))
+        dbg2.inputs['Name'].default_value = "axisify_Hout"
+        _link(ng, src_geo, dbg2.inputs['Geometry'])
+        _link(ng, hE, dbg2.inputs['Value'])
+        src_geo = dbg2.outputs['Geometry']
 
     na = _new(ng, 'GeometryNodeInputNamedAttribute',
               data_type='FLOAT_VECTOR', location=(-400, 700))
@@ -278,7 +332,7 @@ def build_group(rebuild=False):
             s.default_value = False
         elif s.name == 'Offset Scale':
             s.default_value = 0.0
-    _link(ng, st.outputs['Geometry'], ext.inputs['Mesh'])
+    _link(ng, src_geo, ext.inputs['Mesh'])
     _link(ng, cpm.outputs['Result'], ext.inputs['Selection'])
 
     # 侧壁的新顶点（Top）按 D 平移
@@ -289,7 +343,7 @@ def build_group(rebuild=False):
 
     # 内层 = 曲面整体平移 D，翻转法线
     spb = _new(ng, 'GeometryNodeSetPosition', location=(0, 500))
-    _link(ng, st.outputs['Geometry'], spb.inputs['Geometry'])
+    _link(ng, src_geo, spb.inputs['Geometry'])
     _link(ng, na.outputs['Attribute'], spb.inputs['Offset'])
 
     flip = _new(ng, 'GeometryNodeFlipFaces', location=(400, 400))

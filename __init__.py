@@ -7,7 +7,7 @@
 bl_info = {
     "name": "Axisify",
     "author": "HULIMIAO",
-    "version": (1, 4, 0),
+    "version": (1, 5, 0),
     "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
     "description": "实体化并让侧壁精确对齐到 X/Y/Z 轴，可作为可调修改器（带厚度钳制）",
@@ -120,6 +120,7 @@ def set_group_defaults(ng, st):
     vals = {
         "厚度": float(st.thickness),
         "厚度钳制": float(st.thickness_clamp),
+        "最大厚度 (0=不限)": float(st.max_thickness),
         "合并顶点": float(st.merge_verts),
         "对齐到轴": True,
         "吸轴角度": float(st.snap_tol),
@@ -183,6 +184,12 @@ class AXISIFY_PG_settings(PropertyGroup):
                      "干净的「实体化成半径」收口（关闭则会翻折自交）。\n"
                      "0 = 关闭"),
         default=0.0, min=0.0, max=0.5, subtype='FACTOR',
+    )
+    max_thickness: FloatProperty(
+        name="最大厚度 (0=不限)",
+        description=("硬上限，完全可预测：不管自动钳制算出什么，实际厚度都不会超过它。\n"
+                     "0 = 不限。圆弧半径 R 时填 0.9R 就能保证不翻转自交。"),
+        default=0.0, min=0.0, soft_max=10.0,
     )
     solidify_offset: EnumProperty(
         name="方向",
@@ -312,7 +319,8 @@ class AXISIFY_OT_align(Operator):
                      and getattr(m.node_group, "name", "") == gn.GROUP_NAME
                      for m in src.modifiers)
         if st.auto_solidify and (st.thickness_clamp > 1e-4
-                                 or st.merge_verts > 1e-4):
+                                 or st.merge_verts > 1e-4
+                                 or st.max_thickness > 1e-6):
             # 开启钳制 -> 走 GN 修改器（它按真实曲率半径钳制，
             # 比 Blender 自带按网格尺度的准得多）
             if st.replace_solidify:
@@ -445,6 +453,7 @@ class AXISIFY_PT_main(Panel):
         sub.enabled = st.auto_solidify
         sub.prop(st, "thickness")
         sub.prop(st, "thickness_clamp")
+        sub.prop(st, "max_thickness")
         sub.prop(st, "merge_verts")
         sub.prop(st, "solidify_offset")
         sub.prop(st, "even_thickness")
