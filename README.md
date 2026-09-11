@@ -4,6 +4,12 @@ Axisify 是一个 Blender Geometry Nodes 插件，用于从开放曲面生成实
 
 插件只提供 Geometry Nodes 修改器工作流：参数可以在修改器面板中实时调整，不会自动生成或烘焙新物体。
 
+## 效果对比
+
+![本插件 vs Blender 自带实体化](docs/compare.png)
+
+上图对比同一网格在 Axisify 修改器和 Blender 自带 Solidify 修改器下的结果。Axisify 会把满足吸轴容差的侧壁对齐到坐标轴，普通 Solidify 则沿顶点法线生成侧壁。
+
 ## 下载
 
 从 GitHub 下载最新版本：
