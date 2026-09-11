@@ -7,7 +7,7 @@
 bl_info = {
     "name": "Axisify",
     "author": "HULIMIAO",
-    "version": (1, 5, 0),
+    "version": (1, 5, 1),
     "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
     "description": "实体化并让侧壁精确对齐到 X/Y/Z 轴，可作为可调修改器（带厚度钳制）",
@@ -168,7 +168,7 @@ class AXISIFY_PG_settings(PropertyGroup):
     thickness: FloatProperty(
         name="厚度",
         description="实体化厚度（对应 Solidify 的 Thickness）；侧壁对齐后墙长就等于它",
-        default=0.1, min=0.0, soft_max=10.0,
+        default=0.01, min=0.0, soft_max=10.0,
     )
     thickness_clamp: FloatProperty(
         name="厚度钳制",

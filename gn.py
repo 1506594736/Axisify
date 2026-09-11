@@ -96,7 +96,7 @@ def build_group(rebuild=False):
     itf.new_socket("Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
 
     s_thk = itf.new_socket("厚度", in_out='INPUT', socket_type='NodeSocketFloat')
-    s_thk.default_value = 0.1
+    s_thk.default_value = 0.01
     s_thk.min_value = 0.0
 
     s_snap = itf.new_socket("对齐到轴", in_out='INPUT', socket_type='NodeSocketBool')
@@ -195,9 +195,9 @@ def build_group(rebuild=False):
 
     # ---------- 厚度钳制：按局部曲率半径限制位移 ----------
     # 厚度一旦超过局部曲率半径 R，等距偏移就会穿过圆心翻转（自交）。
-    # 每条边算一个等效半径 Re = L / |A2 - A1|（直线边分母→0，Re→∞）。
-    # 0 = 关闭钳制
-    # 注意：必须用【原始法线 n】算曲率，不能用吸附后的 A —— A 会被 SNAP_TOL 打断。
+    # 每条边算一个等效半径 Re = 边长 / |两端点法线之差|（直边→分母0，Re→∞）。
+    # 必须用【原始顶点法线】，不能用吸附后的 A —— A 会被 SNAP_TOL 打断。
+    # 「厚度钳制」= 0 关闭；「最大厚度」是另一个不依赖估计的硬上限。
     ev = _new(ng, 'GeometryNodeInputMeshEdgeVertices', location=(-2200, -700))
     fa1 = _new(ng, 'GeometryNodeFieldAtIndex', data_type='FLOAT_VECTOR',
                domain='EDGE', location=(-1900, -700))
@@ -226,29 +226,6 @@ def build_group(rebuild=False):
     _link(ng, st2.outputs['Geometry'], m2p.inputs['Mesh'])
 
     ppos = _new(ng, 'GeometryNodeInputPosition', location=(-1000, -1100))
-    snn = _new(ng, 'GeometryNodeSampleNearest', location=(-400, -700))
-    _link(ng, m2p.outputs['Points'], snn.inputs['Geometry'])
-    _link(ng, ppos.outputs['Position'], snn.inputs['Sample Position'])
-
-    naR = _new(ng, 'GeometryNodeInputNamedAttribute', data_type='FLOAT',
-               location=(-700, -1000))
-    naR.inputs['Name'].default_value = "axisify_R"
-    sidx = _new(ng, 'GeometryNodeSampleIndex', data_type='FLOAT',
-                domain='POINT', location=(-150, -700))
-    _link(ng, m2p.outputs['Points'], sidx.inputs['Geometry'])
-    _link(ng, naR.outputs['Attribute'], sidx.inputs['Value'])
-    _link(ng, snn.outputs['Index'], sidx.inputs['Index'])
-
-    # 存成 CORNER 属性 → 转成「落在顶点上」的点云 → 顶点采样（距离 0，不会选错）
-    st2 = _new(ng, 'GeometryNodeStoreNamedAttribute', data_type='FLOAT',
-               domain='CORNER', location=(-1000, -700))
-    st2.inputs['Name'].default_value = "axisify_R"
-    _link(ng, gi.outputs['Geometry'], st2.inputs['Geometry'])
-    _link(ng, Re, st2.inputs['Value'])
-
-    m2p = _new(ng, 'GeometryNodeMeshToPoints', mode='CORNERS', location=(-700, -700))
-    _link(ng, st2.outputs['Geometry'], m2p.inputs['Mesh'])
-
     snn = _new(ng, 'GeometryNodeSampleNearest', location=(-400, -700))
     _link(ng, m2p.outputs['Points'], snn.inputs['Geometry'])
     _link(ng, ppos.outputs['Position'], snn.inputs['Sample Position'])
