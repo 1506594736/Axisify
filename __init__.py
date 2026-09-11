@@ -8,7 +8,6 @@ bl_info = {
     "name": "Axisify",
     "author": "HULIMIAO",
     "version": (1, 5, 1),
-    "blender": (3, 0, 0),
     "location": "3D 视图 > N 面板 > Axisify",
     "description": "实体化并让侧壁精确对齐到 X/Y/Z 轴，可作为可调修改器（带厚度钳制）",
     "doc_url": "https://github.com/1506594736/Axisify",
@@ -16,14 +15,12 @@ bl_info = {
     "category": "Mesh",
 }
 
-import contextlib
-import io
-
 import bpy
+import bmesh
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import core, gn
+from . import gn
 
 AXIS_ITEMS = [
     ('+X', "+X", "指向 +X"),
@@ -229,29 +226,6 @@ class AXISIFY_PG_settings(PropertyGroup):
     last_info: StringProperty(default="")
 
 
-class AXISIFY_OT_read_solidify(Operator):
-    bl_idname = "object.axisify_read_solidify"
-    bl_label = "从修改器读取"
-    bl_description = "把物体上 Solidify 修改器的厚度 / 方向 / 均匀厚度读进面板"
-
-    @classmethod
-    def poll(cls, context):
-        ob = context.active_object
-        return (ob is not None and ob.type == 'MESH'
-                and any(m.type == 'SOLIDIFY' for m in ob.modifiers))
-
-    def execute(self, context):
-        ob = context.active_object
-        st = context.scene.axisify
-        mod = next(m for m in ob.modifiers if m.type == 'SOLIDIFY')
-        st.thickness = float(mod.thickness)
-        st.even_thickness = bool(mod.use_even_offset)
-        st.solidify_offset = ('IN' if mod.offset < -0.33
-                              else ('OUT' if mod.offset > 0.33 else 'CENTER'))
-        self.report({'INFO'}, "已读取 %s 的实体化参数" % ob.name)
-        return {'FINISHED'}
-
-
 class AXISIFY_OT_use_modifier(Operator):
     bl_idname = "object.axisify_use_modifier"
     bl_label = "作为修改器（可实时调整）"
@@ -274,150 +248,44 @@ class AXISIFY_OT_use_modifier(Operator):
                 self.report({'ERROR'}, "请先切回物体模式（自动切换失败：%s）" % ex)
                 return {'CANCELLED'}
 
-        if st.replace_solidify:
-            for m in [m for m in ob.modifiers if m.type == 'SOLIDIFY']:
-                ob.modifiers.remove(m)
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        has_boundary = any(len(e.link_faces) == 1 for e in bm.edges)
+        bm.free()
+        if not has_boundary:
+            self.report({'ERROR'}, "Axisify 需要开放曲面，闭合网格没有可实体化的边界")
+            return {'CANCELLED'}
 
         ng = gn.build_group()
         # 旧的重建一下，让它继承最新的接口默认值
-        for m in [m for m in ob.modifiers
-                  if m.type == 'NODES' and m.node_group is ng]:
-            ob.modifiers.remove(m)
         set_group_defaults(ng, st)
         mod = gn.ensure_modifier(ob)
+        # Existing modifiers keep their own socket values; refresh them from
+        # the panel defaults so clicking the button applies current settings.
+        for item in ng.interface.items_tree:
+            if item.in_out == 'INPUT' and hasattr(item, 'identifier'):
+                try:
+                    if item.name == "厚度":
+                        mod[item.identifier] = float(st.thickness)
+                    elif item.name == "吸轴角度":
+                        mod[item.identifier] = float(st.snap_tol)
+                    elif item.name == "固定轴 (0=自动)":
+                        mod[item.identifier] = (AXIS_VEC[st.fixed_axis]
+                                                if st.axis_mode == 'fixed'
+                                                else (0.0, 0.0, 0.0))
+                    elif item.name == "厚度钳制":
+                        mod[item.identifier] = float(st.thickness_clamp)
+                    elif item.name == "最大厚度 (0=不限)":
+                        mod[item.identifier] = float(st.max_thickness)
+                    elif item.name == "合并顶点":
+                        mod[item.identifier] = float(st.merge_verts)
+                    elif item.name == "对齐到轴":
+                        mod[item.identifier] = True
+                except (KeyError, TypeError, ValueError):
+                    pass
         move_modifier_to_top(context, ob, mod)
         context.view_layer.update()
         self.report({'INFO'}, "已给 %s 添加 Axisify 修改器（在修改器面板里调参数）" % ob.name)
-        return {'FINISHED'}
-
-
-class AXISIFY_OT_align(Operator):
-    bl_idname = "object.axisify_align"
-    bl_label = "对齐侧壁到轴（烘焙成新物体）"
-    bl_description = "把实体化生成的侧壁投影到 X/Y/Z 轴，使其与所选轴严格平行"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        ob = context.active_object
-        return ob is not None and ob.type == 'MESH'
-
-    def execute(self, context):
-        st = context.scene.axisify
-        src = context.active_object
-        if src.mode != 'OBJECT':
-            try:
-                bpy.ops.object.mode_set(mode='OBJECT')
-            except Exception as ex:
-                self.report({'ERROR'}, "请先切回物体模式（自动切换失败：%s）" % ex)
-                return {'CANCELLED'}
-
-        smod = ""
-        pre_mods = {m.name for m in src.modifiers}
-        tmp_gn_names = set()
-        has_gn = any(m.type == 'NODES'
-                     and getattr(m.node_group, "name", "") == gn.GROUP_NAME
-                     for m in src.modifiers)
-        if st.auto_solidify and (st.thickness_clamp > 1e-4
-                                 or st.merge_verts > 1e-4
-                                 or st.max_thickness > 1e-6):
-            # 开启钳制 -> 走 GN 修改器（它按真实曲率半径钳制，
-            # 比 Blender 自带按网格尺度的准得多）
-            if st.replace_solidify:
-                for m in [m for m in src.modifiers if m.type == 'SOLIDIFY']:
-                    src.modifiers.remove(m)
-            ngx = gn.build_group()
-            for m in [m for m in src.modifiers
-                      if m.type == 'NODES' and m.node_group is ngx]:
-                src.modifiers.remove(m)
-            set_group_defaults(ngx, st)
-            gn.ensure_modifier(src)
-            gnmod = [m for m in src.modifiers
-                     if m.type == 'NODES' and m.node_group is ngx][-1]
-            move_modifier_to_top(context, src, gnmod)
-            context.view_layer.update()
-            tmp_gn_names = {m.name for m in src.modifiers} - pre_mods
-            smod = "Axisify修改器(钳制%.2f) %.4g" % (st.thickness_clamp,
-                                                   st.thickness)
-        elif has_gn:
-            smod = "已有 Axisify 修改器（不再叠加 Solidify）"
-        elif st.auto_solidify:
-            _m, made = ensure_solidify(context, src, st)
-            smod = "%sSolidify %.4g %s" % ("新建" if made else "更新",
-                                         st.thickness,
-                                         OFFSET_CN[st.solidify_offset])
-
-        # 把面板参数写进算法模块的同名全局变量（算法本身一行未改）
-        core.AXIS_MODE = st.axis_mode
-        core.AXIS = AXIS_VEC[st.fixed_axis]
-        core.SNAP_TOL = float(st.snap_tol)
-        core.MIN_AXIAL = float(st.min_axial)
-        core.CAP_ANGLE = float(st.cap_angle)
-        core.SKIP_BURIED = bool(st.skip_buried)
-        core.SAVE_BLEND = ""
-
-        before = set(bpy.data.objects)
-        log = ""
-        if tmp_gn_names:
-            # GN 修改器已经完成「实体化 + 贴轴」，直接烘焙它的求值结果，
-            # 不再跑一遍 core（那会把已经对齐好的几何再动一次）
-            try:
-                bmx = core.build_bmesh(src)
-                nme = bpy.data.meshes.new(src.name + "_axis")
-                bmx.to_mesh(nme)
-                bmx.free()
-                nobj = bpy.data.objects.new(src.name + "_对齐", nme)
-                nobj.matrix_world = src.matrix_world
-                context.scene.collection.objects.link(nobj)
-                log = "[烘焙] 直接采用 Axisify 修改器的求值结果（已含钳制）\n"
-            except Exception as ex:
-                self.report({'ERROR'}, "失败：%s" % ex)
-                return {'CANCELLED'}
-        else:
-            buf = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf):
-                    core.run()
-            except Exception as ex:
-                self.report({'ERROR'}, "失败：%s" % ex)
-                return {'CANCELLED'}
-            log = buf.getvalue()
-        for line in log.splitlines():
-            print(line)
-
-        new = [o for o in bpy.data.objects if o not in before and o.type == 'MESH']
-        if not new:
-            st.last_info = "没有生成结果：分不出盖面 / 侧壁"
-            self.report({'WARNING'}, "没有生成结果，请检查模型是否有明确的盖面与侧壁")
-            return {'CANCELLED'}
-
-        out = new[-1]
-        if tmp_gn_names:
-            for m in [m for m in src.modifiers if m.name in tmp_gn_names]:
-                src.modifiers.remove(m)
-            context.view_layer.update()
-        if st.auto_solidify and st.bake_clean_solidify:
-            for m in [m for m in src.modifiers if m.type == 'SOLIDIFY']:
-                src.modifiers.remove(m)
-        if st.select_result:
-            for o in context.view_layer.objects:
-                o.select_set(False)
-            out.select_set(True)
-            context.view_layer.objects.active = out
-
-        nwall, align = "", ""
-        for line in log.splitlines():
-            line = line.strip()
-            if line.startswith("[侧壁]"):
-                nwall = line[len("[侧壁]"):].strip()
-            elif line.startswith("[对齐后]"):
-                align = (line[len("[对齐后]"):]
-                         .replace("vs 各自所取轴", "对轴偏差")
-                         .strip())
-
-        parts = [p for p in (smod, nwall, align) if p]
-        st.last_info = " | ".join(parts) if parts else "完成"
-        self.report({'INFO'}, "已生成 %s" % out.name)
         return {'FINISHED'}
 
 
@@ -448,39 +316,18 @@ class AXISIFY_PT_main(Panel):
 
         box = layout.box()
         box.label(text="实体化", icon='MOD_SOLIDIFY')
-        box.prop(st, "auto_solidify")
         sub = box.column(align=True)
-        sub.enabled = st.auto_solidify
         sub.prop(st, "thickness")
         sub.prop(st, "thickness_clamp")
         sub.prop(st, "max_thickness")
         sub.prop(st, "merge_verts")
-        sub.prop(st, "solidify_offset")
-        sub.prop(st, "even_thickness")
-        row = box.row()
-        row.enabled = AXISIFY_OT_read_solidify.poll(context)
-        row.operator(AXISIFY_OT_read_solidify.bl_idname, icon='IMPORT')
-
         layout.label(text="侧壁贴轴")
         col = layout.column(align=True)
         col.prop(st, "snap_tol")
-        col.prop(st, "min_axial")
-        col.prop(st, "cap_angle")
-
-        col = layout.column(align=True)
-        col.prop(st, "skip_buried")
-        col.prop(st, "select_result")
-
         layout.separator()
         row = layout.row()
         row.scale_y = 1.5
         row.operator(AXISIFY_OT_use_modifier.bl_idname, icon=ICON_GEO)
-        col = layout.column(align=True)
-        col.prop(st, "replace_solidify")
-        col.prop(st, "bake_clean_solidify")
-        layout.separator()
-        row = layout.row()
-        row.operator(AXISIFY_OT_align.bl_idname, icon='MESH_GRID')
 
         if st.last_info:
             box = layout.box()
@@ -503,13 +350,9 @@ class AXISIFY_PT_help(Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text="方式一（推荐）：点「作为修改器」")
+        col.label(text="使用方式：点「作为修改器」")
         col.label(text="  修改器面板里可实时调厚度、")
         col.label(text="  吸轴角度、固定轴，不生成新物体")
-        layout.separator()
-        col = layout.column(align=True)
-        col.label(text="方式二：点「烘焙成新物体」")
-        col.label(text="  结果是一个独立的静态网格")
         layout.separator()
         box = layout.box()
         box.label(text="注意", icon='ERROR')
@@ -521,15 +364,15 @@ class AXISIFY_PT_help(Panel):
 
 CLASSES = (
     AXISIFY_PG_settings,
-    AXISIFY_OT_read_solidify,
     AXISIFY_OT_use_modifier,
-    AXISIFY_OT_align,
     AXISIFY_PT_main,
     AXISIFY_PT_help,
 )
 
 
 def register():
+    if hasattr(bpy.types.Scene, "axisify"):
+        return
     for c in CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.axisify = PointerProperty(type=AXISIFY_PG_settings)
@@ -540,3 +383,4 @@ def unregister():
         del bpy.types.Scene.axisify
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
+

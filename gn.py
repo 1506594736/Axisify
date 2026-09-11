@@ -187,10 +187,21 @@ def build_group(rebuild=False):
 
     # 固定轴模式
     fal = B.vs('LENGTH', gi.outputs["固定轴 (0=自动)"], None)
-    g = B.m('GREATER_THAN', a=fal, bv=1e-4)
     fan = B.v('NORMALIZE', a=gi.outputs["固定轴 (0=自动)"])
-    dif2 = B.v('SUBTRACT', a=fan, b=a1)
-    dif2s = B.v('SCALE', a=dif2, scale=g)
+    # Fixed-axis mode follows the same snap tolerance as automatic mode.
+    # A zero vector keeps automatic selection enabled.
+    fdot = B.vs('DOT_PRODUCT', nrm.outputs['Normal'], fan)
+    fabs = B.m('ABSOLUTE', a=fdot)
+    fge = B.m('GREATER_THAN', a=fabs, b=ctol)
+    has_axis = B.m('GREATER_THAN', a=fal, bv=1e-4)
+    g = B.m('MULTIPLY', a=fge, b=has_axis)
+    # Fixed-axis mode: within tolerance use the requested axis; outside it
+    # preserve the original normal (do not silently switch to another axis).
+    dif2 = B.v('SUBTRACT', a=fan, b=nrm.outputs['Normal'])
+    fixed_a = B.v('ADD', a=nrm.outputs['Normal'],
+                  b=B.v('SCALE', a=dif2, scale=fge))
+    dif2b = B.v('SUBTRACT', a=fixed_a, b=a1)
+    dif2s = B.v('SCALE', a=dif2b, scale=has_axis)
     A = B.v('ADD', a=a1, b=dif2s)
 
     # ---------- 厚度钳制：按局部曲率半径限制位移 ----------
