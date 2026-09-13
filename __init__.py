@@ -243,7 +243,7 @@ class AXISIFY_OT_bake(Operator):
                                        selected_editable_objects=[result]):
                 bpy.ops.object.modifier_add_node_group(
                     asset_library_type='ESSENTIALS',
-                    relative_asset_identifier="geometry_nodes\\smooth_by_angle.blend\\NodeTree\\按角度平滑")
+                    relative_asset_identifier="geometry_nodes_essentials.blend\\NodeTree\\Smooth by Angle")
         except Exception:
             pass
         archive = bpy.data.collections.get("Axisify 原模型（隐藏）") or bpy.data.collections.new("Axisify 原模型（隐藏）")
