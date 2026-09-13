@@ -180,6 +180,17 @@ def build_group(rebuild=False):
     # 与「对齐到轴」开关相乘（bool -> float 走隐式转换）
     f = B.m('MULTIPLY', a=ge, b=gi.outputs["对齐到轴"])
 
+    # 三叉/多叉交汇点不能共用同一个轴向投影点：不同弧段在此处
+    # 需要各自的切线交点。对连接边超过两条的顶点关闭轴向投影，
+    # 保留法线偏移，避免交汇区域塌陷和自相交。
+    vn = _new(ng, 'GeometryNodeInputMeshVertexNeighbors', location=(-1800, 650))
+    vcmp = _new(ng, 'FunctionNodeCompare', data_type='INT',
+                operation='GREATER_THAN', location=(-1500, 650))
+    vcmp.inputs['B'].default_value = 2
+    _link(ng, vn.outputs['Vertex Count'], vcmp.inputs['A'])
+    vkeep = B.m('SUBTRACT', b=vcmp.outputs['Result'], av=1.0)
+    f = B.m('MULTIPLY', a=f, b=vkeep)
+
     # A1 = n + (A_raw - n) * f
     dif = B.v('SUBTRACT', a=araw, b=nrm.outputs['Normal'])
     difs = B.v('SCALE', a=dif, scale=f)
