@@ -39,7 +39,6 @@ AXIS_VEC = {
 # Solidify 的 offset 符号约定（已用立方体实测确认）：
 #   -1 -> 向内（原始面成为外表面）   0 -> 居中   +1 -> 向外（原始面成为内表面）
 SOLIDIFY_OFFSET = {'IN': -1.0, 'CENTER': 0.0, 'OUT': 1.0}
-OFFSET_CN = {'IN': "向内", 'CENTER': "居中", 'OUT': "向外"}
 
 
 def _pick_icon(*names):
@@ -157,11 +156,6 @@ class AXISIFY_PG_settings(PropertyGroup):
         default=45.0, min=1.0, max=89.0,
     )
 
-    auto_solidify: BoolProperty(
-        name="自动设置实体化",
-        description="点按钮时自动给物体添加 / 更新 Solidify 修改器，用下面的厚度和方向。取消勾选则沿用物体自己的修改器",
-        default=True,
-    )
     thickness: FloatProperty(
         name="厚度",
         description="实体化厚度（对应 Solidify 的 Thickness）；侧壁对齐后墙长就等于它",
@@ -203,25 +197,10 @@ class AXISIFY_PG_settings(PropertyGroup):
         description="对应 Solidify 的 Even Thickness；让垂直厚度处处相等，但会改变转角处的布线",
         default=False,
     )
-    replace_solidify: BoolProperty(
-        name="移除旧的实体化修改器",
-        description="「作为修改器」时先删掉物体上已有的 Solidify 修改器 —— Axisify 修改器自己就会实体化，留着会在场景里多出一个模型",
-        default=True,
-    )
-    bake_clean_solidify: BoolProperty(
-        name="烘焙后移除实体化修改器",
-        description="烘焙生成新物体后，删掉源物体上由插件添加的 Solidify 修改器，避免出现两个看起来一样的模型",
-        default=True,
-    )
     skip_buried: BoolProperty(
         name="自交保护",
         description="跳过自交/重叠区域内的侧壁。实测开启后残留偏差反而更大，默认关闭",
         default=False,
-    )
-    select_result: BoolProperty(
-        name="选中结果物体",
-        description="完成后选中新生成的对齐结果",
-        default=True,
     )
     last_info: StringProperty(default="")
 
