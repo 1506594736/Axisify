@@ -190,6 +190,11 @@ def build_group(rebuild=False):
     _link(ng, vn.outputs['Vertex Count'], vcmp.inputs['A'])
     vkeep = B.m('SUBTRACT', b=vcmp.outputs['Result'], av=1.0)
     f = B.m('MULTIPLY', a=f, b=vkeep)
+    # At a multi-branch junction, a single shared vertex cannot represent
+    # three independent offset intersections. Reduce the local offset to
+    # keep the junction watertight instead of allowing the branches to fold
+    # through one another. Regular (<=2-edge) vertices remain unchanged.
+    jscale = B.m('SUBTRACT', b=B.m('MULTIPLY', a=vcmp.outputs['Result'], bv=0.65), av=1.0)
 
     # A1 = n + (A_raw - n) * f
     dif = B.v('SUBTRACT', a=araw, b=nrm.outputs['Normal'])
@@ -288,7 +293,8 @@ def build_group(rebuild=False):
     t2 = B.vs('DOT_PRODUCT', nrm.outputs['Normal'], A)
     k = B.m('MULTIPLY', a=hF, b=t2)
     kneg = B.m('MULTIPLY', a=k, bv=-1.0)
-    D = B.v('SCALE', a=A, scale=kneg)
+    D0 = B.v('SCALE', a=A, scale=kneg)
+    D = B.v('SCALE', a=D0, scale=jscale)
 
     # 存成点属性（挤出时新顶点会继承）
     st = _new(ng, 'GeometryNodeStoreNamedAttribute',
