@@ -234,18 +234,13 @@ class AXISIFY_OT_bake(Operator):
         # Put the baked result in the same collections as the source object.
         for c in original_collections:
             c.objects.link(result)
+        # core.run links the result to the scene collection by default; keep
+        # only the source collections to avoid duplicate Outliner entries.
+        for c in list(result.users_collection):
+            if c not in original_collections:
+                c.objects.unlink(result)
         for poly in result.data.polygons:
             poly.use_smooth = True
-        # Add Blender's built-in Smooth by Angle modifier when available.
-        try:
-            with context.temp_override(object=result, active_object=result,
-                                       selected_objects=[result],
-                                       selected_editable_objects=[result]):
-                bpy.ops.object.modifier_add_node_group(
-                    asset_library_type='ESSENTIALS',
-                    relative_asset_identifier="geometry_nodes_essentials.blend\\NodeTree\\Smooth by Angle")
-        except Exception:
-            pass
         archive = bpy.data.collections.get("Axisify 原模型（隐藏）") or bpy.data.collections.new("Axisify 原模型（隐藏）")
         if archive.name not in context.scene.collection.children:
             context.scene.collection.children.link(archive)
