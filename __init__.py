@@ -97,37 +97,6 @@ def ensure_solidify(context, obj, st):
     return mod, made
 
 
-def move_modifier_to_top(context, obj, mod):
-    """把修改器移到栈顶（需要合法的 active object 上下文）"""
-    try:
-        if hasattr(context, "temp_override"):
-            with context.temp_override(object=obj, active_object=obj,
-                                       selected_objects=[obj],
-                                       selected_editable_objects=[obj]):
-                bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
-        else:
-            bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
-    except Exception:
-        pass
-
-
-def set_group_defaults(ng, st):
-    """把面板参数写成节点组的接口默认值（新加的修改器会继承它们）"""
-    vals = {
-        "厚度": float(st.thickness),
-        "厚度钳制": float(st.thickness_clamp),
-        "最大厚度 (0=不限)": float(st.max_thickness),
-        "合并顶点": float(st.merge_verts),
-        "对齐到轴": True,
-        "吸轴角度": float(st.snap_tol),
-        "固定轴 (0=自动)": (AXIS_VEC[st.fixed_axis] if st.axis_mode == 'fixed'
-                            else (0.0, 0.0, 0.0)),
-    }
-    for it in ng.interface.items_tree:
-        if it.in_out == 'INPUT' and it.name in vals:
-            it.default_value = vals[it.name]
-
-
 class AXISIFY_PG_settings(PropertyGroup):
     axis_mode: EnumProperty(
         name="取轴方式",
@@ -205,17 +174,14 @@ class AXISIFY_PG_settings(PropertyGroup):
     last_info: StringProperty(default="")
 
 
-class AXISIFY_OT_use_modifier(Operator):
-    bl_idname = "object.axisify_use_modifier"
-    bl_label = "作为修改器（可实时调整）"
-    bl_description = ("给物体加一个 Geometry Nodes 修改器，在里面同时完成实体化和侧壁贴轴。\n"
-                      "参数可在修改器面板实时调整，不生成新物体")
+class AXISIFY_OT_bake(Operator):
+    bl_idname = "object.axisify_bake"
+    bl_label = "烘焙为新物体"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        ob = context.active_object
-        return ob is not None and ob.type == 'MESH'
+        return context.active_object is not None and context.active_object.type == 'MESH'
 
     def execute(self, context):
         st = context.scene.axisify
@@ -235,49 +201,6 @@ class AXISIFY_OT_use_modifier(Operator):
             self.report({'ERROR'}, "Axisify 需要开放曲面，闭合网格没有可实体化的边界")
             return {'CANCELLED'}
 
-        ng = gn.build_group()
-        # 旧的重建一下，让它继承最新的接口默认值
-        set_group_defaults(ng, st)
-        mod = gn.ensure_modifier(ob)
-        # Existing modifiers keep their own socket values; refresh them from
-        # the panel defaults so clicking the button applies current settings.
-        for item in ng.interface.items_tree:
-            if item.in_out == 'INPUT' and hasattr(item, 'identifier'):
-                try:
-                    if item.name == "厚度":
-                        mod[item.identifier] = float(st.thickness)
-                    elif item.name == "吸轴角度":
-                        mod[item.identifier] = float(st.snap_tol)
-                    elif item.name == "固定轴 (0=自动)":
-                        mod[item.identifier] = (AXIS_VEC[st.fixed_axis]
-                                                if st.axis_mode == 'fixed'
-                                                else (0.0, 0.0, 0.0))
-                    elif item.name == "厚度钳制":
-                        mod[item.identifier] = float(st.thickness_clamp)
-                    elif item.name == "最大厚度 (0=不限)":
-                        mod[item.identifier] = float(st.max_thickness)
-                    elif item.name == "合并顶点":
-                        mod[item.identifier] = float(st.merge_verts)
-                    elif item.name == "对齐到轴":
-                        mod[item.identifier] = True
-                except (KeyError, TypeError, ValueError):
-                    pass
-        move_modifier_to_top(context, ob, mod)
-        context.view_layer.update()
-        self.report({'INFO'}, "已给 %s 添加 Axisify 修改器（在修改器面板里调参数）" % ob.name)
-        return {'FINISHED'}
-
-
-class AXISIFY_OT_bake(Operator):
-    bl_idname = "object.axisify_bake"
-    bl_label = "烘焙为新物体"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None and context.active_object.type == 'MESH'
-
-    def execute(self, context):
         src = context.active_object
         st = context.scene.axisify
         if src.mode != 'OBJECT':
@@ -302,9 +225,17 @@ class AXISIFY_OT_bake(Operator):
         if result is None:
             self.report({'WARNING'}, "没有生成结果，请检查模型是否为开放曲面")
             return {'CANCELLED'}
+        result.name = src.name
+        result.data.name = src.name + "_Mesh"
+        for poly in result.data.polygons:
+            poly.use_smooth = True
         archive = bpy.data.collections.get("Axisify 原模型（隐藏）") or bpy.data.collections.new("Axisify 原模型（隐藏）")
         if archive.name not in context.scene.collection.children:
             context.scene.collection.children.link(archive)
+        try:
+            context.scene.collection.children.move(len(context.scene.collection.children) - 1, 0)
+        except (AttributeError, TypeError, RuntimeError):
+            pass
         for c in list(src.users_collection):
             c.objects.unlink(src)
         archive.objects.link(src)
@@ -347,17 +278,12 @@ class AXISIFY_PT_main(Panel):
         sub = box.column(align=True)
         sub.prop(st, "thickness")
         sub.prop(st, "solidify_offset")
-        sub.prop(st, "thickness_clamp")
-        sub.prop(st, "max_thickness")
-        sub.prop(st, "merge_verts")
         layout.label(text="侧壁贴轴")
         col = layout.column(align=True)
         col.prop(st, "snap_tol")
         layout.separator()
         row = layout.row()
         row.scale_y = 1.5
-        row.operator(AXISIFY_OT_use_modifier.bl_idname, icon=ICON_GEO)
-        row = layout.row()
         row.operator(AXISIFY_OT_bake.bl_idname, icon='MESH_GRID')
 
         if st.last_info:
@@ -381,9 +307,7 @@ class AXISIFY_PT_help(Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text="使用方式：点「作为修改器」")
-        col.label(text="  修改器面板里可实时调厚度、")
-        col.label(text="  吸轴角度、固定轴，不生成新物体")
+        col.label(text="使用方式：设置参数后点「烘焙为新物体」")
         layout.separator()
         box = layout.box()
         box.label(text="注意", icon='ERROR')
@@ -395,7 +319,6 @@ class AXISIFY_PT_help(Panel):
 
 CLASSES = (
     AXISIFY_PG_settings,
-    AXISIFY_OT_use_modifier,
     AXISIFY_OT_bake,
     AXISIFY_PT_main,
     AXISIFY_PT_help,
