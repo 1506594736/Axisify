@@ -227,9 +227,13 @@ class AXISIFY_OT_bake(Operator):
             return {'CANCELLED'}
         # Free the source name first so the baked result can keep it.
         old_name = src.name
+        original_collections = list(src.users_collection)
         src.name = old_name + "_原模型"
         result.name = old_name
-        result.data.name = src.name + "_Mesh"
+        result.data.name = old_name + "_Mesh"
+        # Put the baked result in the same collections as the source object.
+        for c in original_collections:
+            c.objects.link(result)
         for poly in result.data.polygons:
             poly.use_smooth = True
         # Add Blender's built-in Smooth by Angle modifier when available.
@@ -239,7 +243,7 @@ class AXISIFY_OT_bake(Operator):
                                        selected_editable_objects=[result]):
                 bpy.ops.object.modifier_add_node_group(
                     asset_library_type='ESSENTIALS',
-                    relative_asset_identifier="geometry_nodes\\smooth_by_angle.blend\\NodeTree\\Smooth by Angle")
+                    relative_asset_identifier="geometry_nodes\\smooth_by_angle.blend\\NodeTree\\按角度平滑")
         except Exception:
             pass
         archive = bpy.data.collections.get("Axisify 原模型（隐藏）") or bpy.data.collections.new("Axisify 原模型（隐藏）")
@@ -249,8 +253,6 @@ class AXISIFY_OT_bake(Operator):
             context.scene.collection.children.move(len(context.scene.collection.children) - 1, 0)
         except (AttributeError, TypeError, RuntimeError):
             pass
-        for c in list(src.users_collection):
-            c.objects.unlink(src)
         archive.objects.link(src)
         src.hide_set(True)
         src.hide_render = True
