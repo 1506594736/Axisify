@@ -225,10 +225,23 @@ class AXISIFY_OT_bake(Operator):
         if result is None:
             self.report({'WARNING'}, "没有生成结果，请检查模型是否为开放曲面")
             return {'CANCELLED'}
-        result.name = src.name
+        # Free the source name first so the baked result can keep it.
+        old_name = src.name
+        src.name = old_name + "_原模型"
+        result.name = old_name
         result.data.name = src.name + "_Mesh"
         for poly in result.data.polygons:
             poly.use_smooth = True
+        # Add Blender's built-in Smooth by Angle modifier when available.
+        try:
+            with context.temp_override(object=result, active_object=result,
+                                       selected_objects=[result],
+                                       selected_editable_objects=[result]):
+                bpy.ops.object.modifier_add_node_group(
+                    asset_library_type='ESSENTIALS',
+                    relative_asset_identifier="geometry_nodes\\smooth_by_angle.blend\\NodeTree\\Smooth by Angle")
+        except Exception:
+            pass
         archive = bpy.data.collections.get("Axisify 原模型（隐藏）") or bpy.data.collections.new("Axisify 原模型（隐藏）")
         if archive.name not in context.scene.collection.children:
             context.scene.collection.children.link(archive)
@@ -242,7 +255,7 @@ class AXISIFY_OT_bake(Operator):
         src.hide_set(True)
         src.hide_render = True
         for m in list(src.modifiers):
-            if m.type == 'NODES' and getattr(m, 'node_group', None) and m.node_group.name == gn.GROUP_NAME:
+            if m.type in {'SOLIDIFY', 'NODES'} and (m.type == 'SOLIDIFY' or (getattr(m, 'node_group', None) and m.node_group.name == gn.GROUP_NAME)):
                 src.modifiers.remove(m)
         self.report({'INFO'}, "已生成新物体，原模型已归档隐藏")
         return {'FINISHED'}
