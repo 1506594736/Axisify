@@ -303,6 +303,9 @@ class AXISIFY_OT_bake(Operator):
         st = context.scene.axisify
         if src.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
+        # Apply the remembered panel thickness and direction through a
+        # temporary Solidify modifier so the Python baker uses the same input.
+        ensure_solidify(context, src, st)
         core.AXIS_MODE = st.axis_mode
         core.AXIS = AXIS_VEC[st.fixed_axis]
         core.SNAP_TOL = float(st.snap_tol)
@@ -364,6 +367,7 @@ class AXISIFY_PT_main(Panel):
         box.label(text="实体化", icon='MOD_SOLIDIFY')
         sub = box.column(align=True)
         sub.prop(st, "thickness")
+        sub.prop(st, "solidify_offset")
         sub.prop(st, "thickness_clamp")
         sub.prop(st, "max_thickness")
         sub.prop(st, "merge_verts")
