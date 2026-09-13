@@ -248,6 +248,9 @@ class AXISIFY_OT_bake(Operator):
             context.scene.collection.children.move(len(context.scene.collection.children) - 1, 0)
         except (AttributeError, TypeError, RuntimeError):
             pass
+        # Move the source exclusively into the hidden archive collection.
+        for c in list(src.users_collection):
+            c.objects.unlink(src)
         archive.objects.link(src)
         src.hide_set(True)
         src.hide_render = True
