@@ -20,7 +20,7 @@ import bmesh
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import gn
+from . import core, gn
 
 AXIS_ITEMS = [
     ('+X', "+X", "指向 +X"),
@@ -289,6 +289,52 @@ class AXISIFY_OT_use_modifier(Operator):
         return {'FINISHED'}
 
 
+class AXISIFY_OT_bake(Operator):
+    bl_idname = "object.axisify_bake"
+    bl_label = "烘焙为新物体"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and context.active_object.type == 'MESH'
+
+    def execute(self, context):
+        src = context.active_object
+        st = context.scene.axisify
+        if src.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        core.AXIS_MODE = st.axis_mode
+        core.AXIS = AXIS_VEC[st.fixed_axis]
+        core.SNAP_TOL = float(st.snap_tol)
+        core.MIN_AXIAL = float(getattr(st, 'min_axial', 0.05))
+        core.CAP_ANGLE = float(getattr(st, 'cap_angle', 45.0))
+        core.SKIP_BURIED = bool(getattr(st, 'skip_buried', False))
+        core.SAVE_BLEND = ""
+        before = set(bpy.data.objects)
+        try:
+            core.run()
+        except Exception as ex:
+            self.report({'ERROR'}, str(ex))
+            return {'CANCELLED'}
+        result = next((o for o in bpy.data.objects if o not in before and o.type == 'MESH'), None)
+        if result is None:
+            self.report({'WARNING'}, "没有生成结果，请检查模型是否为开放曲面")
+            return {'CANCELLED'}
+        archive = bpy.data.collections.get("Axisify 原模型（隐藏）") or bpy.data.collections.new("Axisify 原模型（隐藏）")
+        if archive.name not in context.scene.collection.children:
+            context.scene.collection.children.link(archive)
+        for c in list(src.users_collection):
+            c.objects.unlink(src)
+        archive.objects.link(src)
+        src.hide_set(True)
+        src.hide_render = True
+        for m in list(src.modifiers):
+            if m.type == 'NODES' and getattr(m, 'node_group', None) and m.node_group.name == gn.GROUP_NAME:
+                src.modifiers.remove(m)
+        self.report({'INFO'}, "已生成新物体，原模型已归档隐藏")
+        return {'FINISHED'}
+
+
 class AXISIFY_PT_main(Panel):
     bl_label = "Axisify"
     bl_idname = "AXISIFY_PT_main"
@@ -328,6 +374,8 @@ class AXISIFY_PT_main(Panel):
         row = layout.row()
         row.scale_y = 1.5
         row.operator(AXISIFY_OT_use_modifier.bl_idname, icon=ICON_GEO)
+        row = layout.row()
+        row.operator(AXISIFY_OT_bake.bl_idname, icon='MESH_GRID')
 
         if st.last_info:
             box = layout.box()
@@ -365,6 +413,7 @@ class AXISIFY_PT_help(Panel):
 CLASSES = (
     AXISIFY_PG_settings,
     AXISIFY_OT_use_modifier,
+    AXISIFY_OT_bake,
     AXISIFY_PT_main,
     AXISIFY_PT_help,
 )
